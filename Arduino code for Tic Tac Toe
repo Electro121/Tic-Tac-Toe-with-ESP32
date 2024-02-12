@@ -1,0 +1,401 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <Arduino_JSON.h>
+
+String wrong = "Wrong move";
+JSONVar compMove;
+
+char board[3][3];
+const char PLAYER = 'X';
+const char COMPUTER = 'O';
+
+char checkWinner();
+int checkFreeSpaces();
+
+void resetBoard();
+void printWinner(char);
+void computerMove();
+void notifyClients();
+
+const char* ssid = "Your router SSID";
+const char* password = "Routers Password";
+
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+void handleWebSocketMessage(void* arg, uint8_t* data, size_t len) {
+    AwsFrameInfo* info = (AwsFrameInfo*)arg;
+    if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+        String message = String((char*)data);
+        int intRow, intColumn, resetStat;
+        if (sscanf(message.c_str(), "%d,%d,%d", &intRow, &intColumn, &resetStat) == 3) {
+            Serial.printf("Row [%d] Column[%d] ResetStatus[%d]\n", intRow, intColumn, resetStat);
+            char winner = checkWinner();
+            if (intRow == 100 && intColumn == 100 && resetStat == 1) {
+              resetBoard();
+            }
+            else if (board[intRow][intColumn] == ' ') {
+                board[intRow][intColumn] = PLAYER;
+                checkFreeSpaces();
+                winner = checkWinner();
+                if (winner != ' ') {
+                    ws.textAll(String(winner));
+                    //Serial.printf("Winner3: %c\n", winner);
+                }
+                //Serial.printf("Winner1: %c\n", winner);
+                else if (winner == ' ' && checkFreeSpaces() != 0) {
+                    computerMove();
+                    //notifyClients();
+                    winner = checkWinner();
+                    //Serial.printf("Winner2: %c\n", winner);
+                    //ws.textAll(String(winner));
+                    if (winner != ' ') {
+                        ws.textAll(String(winner));
+                        //Serial.printf("Winner3: %c\n", winner);
+                    }
+                }
+            } else {
+                ws.textAll(String(wrong));
+            }
+        } 
+        else {
+            ws.textAll(String(wrong));
+        }
+    }
+}
+
+void onEvent(AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
+    switch (type) {
+        case WS_EVT_CONNECT:
+            Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+            break;
+        case WS_EVT_DISCONNECT:
+            Serial.printf("WebSocket client #%u disconnected\n", client->id());
+            //resetBoard();
+            break;
+        case WS_EVT_DATA:
+            handleWebSocketMessage(arg, data, len);
+            break;
+        case WS_EVT_PONG:
+        case WS_EVT_ERROR:
+            break;
+    }
+}
+
+void initWebSocket() {
+    ws.onEvent(onEvent);
+    server.addHandler(&ws);
+}
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2em;
+            margin-bottom: 20px;
+        }
+
+        .board-container {
+            padding: 20px;
+            border: 1px solid rgb(255, 255, 255);
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        .board {
+            display: grid;
+            grid-template-columns: repeat(3, 100px);
+            gap: 5px;
+            margin: auto;
+        }
+
+        .cell {
+            width: 100px;
+            height: 100px;
+            font-size: 40px;
+            border: 1px solid #ccc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .cell:hover {
+            background-color: #f2f2f2;
+        }
+
+        .turn-indicator,
+        .winner-indicator,
+        .reset-button {
+            font-size: 1.2em;
+            margin: 10px;
+        }
+
+        .winner-indicator {
+            font-weight: bold;
+        }
+
+        .reset-button {
+            background-color: #4CAF50; /* Green */
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .reset-button:hover {
+            background-color: #3e8e41; /* Darker green */
+        }
+
+    </style>
+    <title>ESP32 Tic Tac Toe</title>
+    
+</head>
+<body>
+    <h1>Tic Tac Toe</h1>
+    <div class="board-container">
+        <div class="board">
+            <div class="cell" data-index="0" onclick="updateCell(this); sendButtonInput('0','0',resetStat);"></div>
+            <div class="cell" data-index="1" onclick="updateCell(this); sendButtonInput('0','1',resetStat);"></div>
+            <div class="cell" data-index="2" onclick="updateCell(this); sendButtonInput('0','2',resetStat);"></div>
+            <div class="cell" data-index="3" onclick="updateCell(this); sendButtonInput('1','0',resetStat);"></div>
+            <div class="cell" data-index="4" onclick="updateCell(this); sendButtonInput('1','1',resetStat);"></div>
+            <div class="cell" data-index="5" onclick="updateCell(this); sendButtonInput('1','2',resetStat);"></div>
+            <div class="cell" data-index="6" onclick="updateCell(this); sendButtonInput('2','0',resetStat);"></div>
+            <div class="cell" data-index="7" onclick="updateCell(this); sendButtonInput('2','1',resetStat);"></div>
+            <div class="cell" data-index="8" onclick="updateCell(this); sendButtonInput('2','2',resetStat);"></div>
+        </div>
+    </div>
+    <div class="turn-indicator">Player X's turn</div>
+    <div class="winner-indicator" hidden></div>
+    <button class="reset-button" onclick="refreshPage()">Reset Game</button>
+
+
+    <script>
+        var gateway = `ws://${window.location.hostname}/ws`;
+        var websocket;
+        window.addEventListener('load', onload);
+
+        let dt;
+        const cells = document.querySelectorAll(".cell");
+        let buttonClicked = false;
+        let resetStat = 0;
+
+
+
+        function onload(event) {
+            initWebSocket();
+        }
+
+        function initWebSocket() {
+            console.log('Trying to open a WebSocket connection…');
+            websocket = new WebSocket(gateway);
+            websocket.onopen = onOpen;
+            websocket.onclose = onClose;
+            websocket.onmessage = onMessage;
+        }
+        function onOpen(event) {
+            console.log('Connection opened');
+        }
+
+        function onClose(event) {
+            console.log('Connection closed');
+            setTimeout(initWebSocket, 2000);
+        }
+        function onMessage(event) {
+            console.log("Incomming message: "+event.data);
+            dt = event.data
+            //compMove();
+        }
+
+        function handleText() {
+            websocket.send(data);
+        }
+
+        function sendButtonInput(row, column, resetStat) {
+            var data = row + "," + column + "," + resetStat;
+            console.log(data);
+
+            websocket.send(data);
+        }
+        function updateCell(clickedCell) {
+            if (dt != 'Wrong move') {
+                clickedCell.innerHTML = '<strong>X</strong>';
+            }
+
+            console.log("X updated");
+        }
+
+        function onMessage(event) {
+            console.log("Incoming message: " + event.data);
+            dt = event.data;
+            if (dt == 'Wrong move') {
+                alert('Wrong move!');
+            }
+            else if (dt == 'X') {
+                alert('You Won!');
+            }
+            else if (dt == 'O') {
+                alert('You lose!');
+            }
+            else {
+                const [row, column] = dt.split(',');
+
+                // Find the cell corresponding to the row and column
+                const cellIndex = parseInt(row) * 3 + parseInt(column);
+                const cellToUpdate = cells[cellIndex];
+
+                // Update the innerHTML of the cell with "O"
+                cellToUpdate.innerHTML = '<strong>O</strong>';
+            }
+        }
+
+       /* function compMove() {
+            const incoMessage = JSON.parse(dt);
+            const row = incoMessage.row;
+            const column = incoMessage.column;
+            console.log(`Received Computer Move row ${row}: column: ${column}`);
+        }*/
+
+
+        function refreshPage() {
+            location.reload(true);
+            sendButtonInput(100, 100, 1);
+            console.log("Page refreshed");
+        }
+    </script> 
+</body>
+</html>
+)rawliteral";
+
+void initWiFi() {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    Serial.print("Connecting to WiFi ..");
+    while (WiFi.status() != WL_CONNECTED) {
+        Serial.print('.');
+        delay(1000);
+    }
+    Serial.println(WiFi.localIP());
+}
+
+void serverRequest() {
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+        request->send_P(200, "text/html", index_html);
+    });
+}
+
+void setup() {
+    resetBoard();
+    Serial.begin(115200);
+    initWiFi();
+    serverRequest();
+    initWebSocket();
+    server.begin();
+}
+
+void loop() {
+    ws.cleanupClients();
+    delay(300);
+}
+
+void computerMove() {
+    // creates a seed based on the current time
+    srand(time(0));
+    int x, y;
+
+    if (checkFreeSpaces() > 0) {
+        do {
+            x = rand() % 3;
+            y = rand() % 3;
+        } while (board[x][y] != ' ');
+
+        board[x][y] = COMPUTER;
+        //Send computer move
+        String moveMessage = String(x) + "," + String(y);
+        ws.textAll(moveMessage);
+        // store the move in JSON format
+        //compMove["row"] = x;
+        //compMove["column"] = y;
+    } else {
+        printWinner(' ');
+    }
+}
+
+void resetBoard() {
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            board[i][j] = ' ';
+        }
+    }
+}
+
+int checkFreeSpaces() {
+    int freeSpaces = 9;
+
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            if (board[i][j] != ' ') {
+                freeSpaces--;
+            }
+        }
+    }
+    return freeSpaces;
+}
+
+char checkWinner() {
+    // check rows
+    for (int i = 0; i < 3; i++) {
+        if (board[i][0] == board[i][1] && board[i][0] == board[i][2]) {
+            return board[i][0];
+        }
+    }
+    // check columns
+    for (int i = 0; i < 3; i++) {
+        if (board[0][i] == board[1][i] && board[0][i] == board[2][i]) {
+            return board[0][i];
+        }
+    }
+    // check diagonals
+    if (board[0][0] == board[1][1] && board[0][0] == board[2][2]) {
+        return board[0][0];
+    }
+    if (board[0][2] == board[1][1] && board[0][2] == board[2][0]) {
+        return board[0][2];
+    }
+
+    return ' ';
+}
+
+void printWinner(char winner) {
+    Serial.print("Winner: ");
+    if (winner == PLAYER) {
+        Serial.println("Player");
+    } else if (winner == COMPUTER) {
+        Serial.println("Computer");
+    } else {
+        Serial.println("It's a tie");
+    }
+}
+
+void notifyClients() {
+    String jsonStr = JSON.stringify(compMove);
+    ws.textAll(jsonStr);
+}
